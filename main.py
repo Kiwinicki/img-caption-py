@@ -1,5 +1,4 @@
 import multiprocessing as mp
-import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import *
@@ -8,13 +7,23 @@ from tkinter import filedialog
 from PIL import Image, ImageTk
 from transformers import AutoModelForCausalLM, AutoProcessor
 
-# TODO: autosave changes in caption (event listener on Enter change)
-# TODO: shared model variable between multiple processes?
-# TODO: self.process nadpisze nowy process jeżeli zostanie stworzony nowy przed zakończeniem starego
 
+def worker(q_in, q_out):
+    checkpoint = "microsoft/git-base"
+    processor = AutoProcessor.from_pretrained(checkpoint)
+    model = AutoModelForCausalLM.from_pretrained(checkpoint)
 
-# kolejka opisów do wygenerowania gdy user szybko klika lub zatrzymywanie starego modelu
-# model odpalony w oddzielnym procesie połączony dwoma queues (jedno do wysyłania i drugi do wyników)
+    while True:
+        if q_in.empty():
+            continue
+
+        img_file = q_in.get()
+        inputs = processor(images=Image.open(img_file), return_tensors="pt")
+        generated_ids = model.generate(pixel_values=inputs.pixel_values, max_length=50)
+        generated_caption = processor.batch_decode(
+            generated_ids, skip_special_tokens=True
+        )[0]
+        q_out.put({"img_stem": img_file.stem, "cap": generated_caption})
 
 
 class App(tk.Frame):
@@ -24,16 +33,17 @@ class App(tk.Frame):
         self.directory = None
         self.all_files = None  # list of paths
         self.image_files = None  # list of paths
-        self.current_image = None  # Path to image file
+        self.current_image = None  # image file
         self.current_caption = None  # Path to file with caption
 
         self.create_widgets()
 
-        checkpoint = "microsoft/git-base"
-        self.processor = AutoProcessor.from_pretrained(checkpoint)
-        self.model = AutoModelForCausalLM.from_pretrained(checkpoint)
-        self.q = mp.Queue()
-        self.process = None
+        self.q_in = mp.Queue()
+        self.q_out = mp.Queue()
+
+        self.captioner_proc = mp.Process(target=worker, args=(self.q_in, self.q_out))
+        self.captioner_proc.start()
+        self.check_process_status()
 
     def create_widgets(self):
         self.master.geometry("600x600")
@@ -101,73 +111,49 @@ class App(tk.Frame):
         return resized_img
 
     def check_process_status(self):
-        if self.process and not self.process.is_alive():
-            main_bar = self.q.get()
-            print(main_bar)
-            self.process.join()
-            self.process = None
-            print("process terminated")
-            return
+        if not self.q_out.empty():
+            res = self.q_out.get()
+            # print(f"res: {res}")
+            cap_file = Path(self.directory / Path(res["img_stem"] + ".txt"))
+            if cap_file == self.current_caption:
+                self.string_var.set(res["cap"])
+            else:
+                cap_file.write_text(res["cap"])
+            self.all_files.append(cap_file)
+
         self.master.after(100, self.check_process_status)
-        print(".")
+        # print(".", end="")
 
     def show_selected_image(self, event):
         if not self.listbox.curselection():
             return  # when listbox clicked but none item was selected
 
-        if self.current_image:
-            self.canvas.delete(self.current_image)
+        if self.current_image:  # delete old image
+            self.canvas.delete("all")
 
         selected_index = self.listbox.curselection()[0]
-        image_file = self.image_files[selected_index]
+        self.current_image = self.image_files[selected_index]
 
-        img = Image.open(image_file)
+        img = Image.open(self.current_image)
         resized_img = self.resize_and_keep_aspect_ratio(img, 512, 512)
         photo = ImageTk.PhotoImage(resized_img)
 
-        self.current_image = self.canvas.create_image(0, 0, anchor=tk.NW, image=photo)
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=photo)
         self.canvas.image = photo
 
-        # find caption .txt file or create new with generated caption
-        self.current_caption = Path(self.directory / Path(image_file.stem + ".txt"))
-        if self.current_caption in self.all_files:  # if there is caption for image
+        # find caption .txt file and set it in text field
+        self.current_caption = Path(
+            self.directory / Path(self.current_image.stem + ".txt")
+        )
+        if self.current_caption in self.all_files:
             caption = self.current_caption.read_text()
             self.string_var.set(caption)
-        else:  # if not, generate it
-            self.check_process_status()
-            # last_caption = self.current_caption
-            self.process = mp.Process(target=self.generate_caption, args=(self.q,))
-            self.process.start()
-            # generated_caption = self.q.get()
-            # print(generated_caption)
-            # if last_caption == self.current_caption:
-            #     self.string_var.set(generated_caption)
-            # else:
-            #     last_caption.write_text(generated_caption)
-            # self.all_files.append(last_caption)
+        else:
+            self.string_var.set("")
 
-    def generate_caption(self, q):
-        print("new process created")
-        try:
-            process_bar = []
-            for i in range(7):
-                time.sleep(1)
-                process_bar.append(i**4 - (i / 100))
-            q.put(process_bar)
-
-            # TODO: może modele transformers nie mogą być współdzielone między procesami?
-            # inputs = self.processor(images=q.get(), return_tensors="pt")
-            # generated_ids = self.model.generate(
-            #     pixel_values=inputs.pixel_values, max_length=50
-            # )
-            # generated_caption = self.processor.batch_decode(
-            #     generated_ids, skip_special_tokens=True
-            # )[0]
-            # q.put(generated_caption)
-            # self.string_var.set(generated_caption)
-            # self.all_files.append(self.current_caption)
-        except Exception as e:
-            print(f"An error occured while generating caption: {e}")
+    def generate_caption(self, *args):
+        # print(f"req: {self.current_image.stem}")
+        self.q_in.put(self.current_image)
 
 
 if __name__ == "__main__":
