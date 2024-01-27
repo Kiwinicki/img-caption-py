@@ -33,7 +33,7 @@ class App(tk.Frame):
         self.directory = None
         self.all_files = None  # list of paths
         self.image_files = None  # list of paths
-        self.current_image = None  # image file
+        self.current_image = None  # Path to image file
         self.current_caption = None  # Path to file with caption
 
         self.create_widgets()
