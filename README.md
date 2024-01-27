@@ -1,6 +1,7 @@
 # Description
 Tiny tkinter application for image captioning with automatic caption generation option. After opening an image, the app creates a `.txt` file with the same name as the image file in the same directory as the image file.
 Default model used for captioning is `microsoft/git-base` (hardcoded), but you can change one line and have others. Model inference on CPU with FP32 precision (slow).
+`test.ipynb` is redundant.
 
 # How to run:
 1. clone repo
